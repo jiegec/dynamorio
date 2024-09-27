@@ -6090,6 +6090,49 @@ dr_insert_mbr_instrumentation(void *drcontext, instrlist_t *ilist, instr_t *inst
 #elif defined(RISCV64)
     /* FIXME i#3544: Not implemented */
     ASSERT_NOT_IMPLEMENTED(false);
+#elif defined(AARCH64)
+    dcontext_t *dcontext = (dcontext_t *)drcontext;
+    ptr_uint_t address;
+    reg_id_t target = DR_REG_NULL;
+    reg_id_t tmp = DR_REG_NULL;
+    CLIENT_ASSERT(drcontext != NULL,
+                  "dr_insert_mbr_instrumentation: drcontext cannot be NULL");
+    address = (ptr_uint_t)instr_get_translation(instr);
+    CLIENT_ASSERT(address != 0,
+                  "dr_insert_mbr_instrumentation: can't determine app address");
+    CLIENT_ASSERT(instr_is_mbr(instr),
+                  "dr_insert_mbr_instrumentation must be applied to a mbr");
+
+    /* For all known mbr instructions on aarch64, the first source register saves the
+     * target. */
+    target = opnd_get_reg(instr_get_src(instr, 0));
+    /* Use tmp register to save target address. */
+    tmp = (reg_to_pointer_sized(target) == DR_REG_X0) ? DR_REG_X1 : DR_REG_X0;
+    /* Save old value of tmp register to scratch_slot. */
+    dr_save_reg(dcontext, ilist, instr, tmp, scratch_slot);
+    /* Copy target to tmp. */
+    instr_t *mov =
+        XINST_CREATE_move(dcontext, opnd_create_reg(tmp), opnd_create_reg(target));
+    /* PR 214962: ensure we'll properly translate the de-ref of app
+     * memory by marking the spill and de-ref as INSTR_OUR_MANGLING.
+     */
+    instr_set_our_mangling(mov, true);
+    MINSERT(ilist, instr, mov);
+
+    dr_insert_clean_call_ex(
+        drcontext, ilist, instr, callee,
+        /* Many users will ask for mcontexts; some will set; it doesn't seem worth
+         * asking the user to pass in a flag: if they're using this they are not
+         * super concerned about overhead.
+         */
+        DR_CLEANCALL_READS_APP_CONTEXT | DR_CLEANCALL_WRITES_APP_CONTEXT, 2,
+        /* Address of mbr is 1st param. */
+        OPND_CREATE_INTPTR(address),
+        /* Indirect target is 2nd param. */
+        opnd_create_reg(tmp));
+
+    /* Restore old value of tmp register. */
+    dr_restore_reg(dcontext, ilist, instr, tmp, scratch_slot);
 #endif /* X86/ARM/RISCV64 */
 }
 
